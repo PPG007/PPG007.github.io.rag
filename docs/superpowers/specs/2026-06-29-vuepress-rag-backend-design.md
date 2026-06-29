@@ -1,66 +1,66 @@
-# VuePress RAG Backend — Design
+# VuePress RAG 后端 — 设计文档
 
-## Overview
+## 概述
 
-A RAG (Retrieval-Augmented Generation) backend for VuePress technical documentation. Python, API-only, Docker-deployed. Serves semantic search and AI-generated answers with jump-to-source links, consumable by a VuePress plugin.
+为 VuePress 技术文档构建的 RAG（检索增强生成）后端。Python 实现，纯 API，Docker 部署。提供语义搜索和 AI 生成答案，返回带原文跳转链接的结果，供 VuePress 插件调用。
 
-## Architecture
+## 架构
 
 ```
-Git Repo (VuePress docs)
+Git 仓库（VuePress 文档源）
     │
     │  git push → GitHub Action → POST /ingest
     ▼
-FastAPI (REST + SSE streaming)
-    ├── Embedding (OpenAI / Ollama / BGE)
-    ├── LLM (OpenAI / Anthropic / Ollama)
-    └── ChromaDB (persistent volume)
+FastAPI（REST + SSE 流式）
+    ├── Embedding（OpenAI / Ollama / BGE）
+    ├── LLM（OpenAI / Anthropic / Ollama）
+    └── ChromaDB（持久化卷）
 ```
 
-## Project Structure
+## 项目结构
 
 ```
 src/
-├── main.py              # FastAPI entry point
-├── config.py            # Env-based configuration
+├── main.py              # FastAPI 入口
+├── config.py            # 环境变量配置
 ├── ingestion/
-│   ├── git_loader.py    # Git repo clone/pull
-│   ├── splitter.py      # Markdown heading-based chunking
-│   └── pipeline.py      # Ingest orchestration
+│   ├── git_loader.py    # Git 仓库拉取与更新
+│   ├── splitter.py      # Markdown 按标题分块
+│   └── pipeline.py      # 摄取流水线编排
 ├── retrieval/
-│   ├── store.py         # ChromaDB read/write
-│   └── retriever.py     # Semantic search logic
+│   ├── store.py         # ChromaDB 读写
+│   └── retriever.py     # 语义检索逻辑
 ├── llm/
-│   ├── embeddings.py    # Embedding factory (OpenAI | Ollama | BGE)
-│   └── generator.py     # LLM factory (OpenAI | Anthropic | Ollama)
+│   ├── embeddings.py    # Embedding 工厂（OpenAI | Ollama | BGE）
+│   └── generator.py     # LLM 工厂（OpenAI | Anthropic | Ollama）
 └── api/
-    └── routes.py        # API routes
+    └── routes.py        # API 路由
 ```
 
-## API Design
+## API 设计
 
 ### `POST /ingest`
-Trigger documentation ingestion. Accepts optional `repo_url` / `branch` overrides (defaults from config). Runs async, returns task ID.
+触发文档摄取。支持可选的 `repo_url` / `branch` 参数覆盖默认配置。异步执行，返回任务 ID。
 
 ```
 POST /ingest
-Body: { "repo_url": "...", "branch": "main" }  // both optional
+Body: { "repo_url": "...", "branch": "main" }  // 均为可选
 Response: 202 { "task_id": "...", "status": "running" }
 ```
 
 ### `GET /ingest/status?task_id=...`
-Poll ingestion progress. Returns status, document count, error if any.
+查询摄取进度。返回状态、已处理文档数、错误信息。
 
 ```
 Response: 200 { "task_id": "...", "status": "running|done|failed", "docs_processed": 42, "error": null }
 ```
 
 ### `POST /search`
-Semantic search returning document chunks with jump metadata.
+语义检索，返回带跳转元数据的文档片段，不经过 LLM。
 
 ```
 POST /search
-Body: { "query": "how to install", "top_k": 5 }
+Body: { "query": "如何安装", "top_k": 5 }
 
 Response: 200 {
     "results": [
@@ -69,9 +69,9 @@ Response: 200 {
             "score": 0.92,
             "source": {
                 "path": "/guide/getting-started.html",
-                "title": "Getting Started",
-                "hierarchy": ["Guide", "Installation", "npm"],
-                "anchor": "#npm"
+                "title": "快速上手",
+                "hierarchy": ["指南", "安装", "npm 方式"],
+                "anchor": "#npm-方式"
             }
         }
     ]
@@ -79,36 +79,36 @@ Response: 200 {
 ```
 
 ### `POST /chat`
-RAG Q&A with SSE streaming. Returns generated answer token-by-token, followed by source references.
+RAG 问答，SSE 流式返回。逐 token 输出生成的答案，最后返回引用来源。
 
 ```
 POST /chat
-Body: { "query": "how to deploy VuePress?", "top_k": 5 }
+Body: { "query": "如何部署 VuePress？", "top_k": 5 }
 
 Response: SSE stream
-  data: {"token": "To"}
-  data: {"token": " deploy"}
+  data: {"token": "部署"}
+  data: {"token": " VuePress"}
   ...
   data: {"type": "sources", "sources": [...]}
   data: [DONE]
 ```
 
-## Chunking Strategy
+## 分块策略
 
-- Split by `##` heading boundaries (configurable level)
-- Prefix each chunk with context: page title + `h1` heading
-- Preserve hierarchy as breadcrumb array: `["Guide", "Installation", "npm"]`
-- Code blocks are NOT split — kept whole within their parent section
-- Each chunk metadata includes:
-  - `source_path`: relative path in docs repo (e.g., `guide/getting-started.md`)
-  - `url`: VuePress output URL (e.g., `/guide/getting-started.html#npm`)
-  - `hierarchy`: breadcrumb array
-  - `anchor`: target anchor string
-  - `chunk_index`: position within the source file
+- 以 `##` 标题为边界切分（切分级别可配置）
+- 每条 chunk 附加上下文前缀：页面标题 + 一级标题
+- 保留层级关系为面包屑数组：`["指南", "安装", "npm 方式"]`
+- 代码块不拆分，整体保留在所属段落中
+- 每条 chunk 元数据包含：
+  - `source_path`：文档源文件相对路径（如 `guide/getting-started.md`）
+  - `url`：VuePress 输出的跳转 URL（如 `/guide/getting-started.html#npm-方式`）
+  - `hierarchy`：面包屑层级数组
+  - `anchor`：锚点字符串
+  - `chunk_index`：同文件内的顺序编号
 
-## Embedding & LLM Abstraction
+## Embedding & LLM 抽象
 
-Factory pattern with unified interfaces, selectable via environment variables.
+工厂模式 + 统一接口，通过环境变量切换后端。
 
 ### Embedding
 
@@ -117,8 +117,8 @@ class BaseEmbedding(ABC):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
     def embed_query(self, text: str) -> list[float]: ...
 
-# Backends: OpenAIEmbedding, OllamaEmbedding, LocalBGE
-# Select via: EMBEDDING_BACKEND=openai|ollama|bge
+# 后端：OpenAIEmbedding、OllamaEmbedding、LocalBGE
+# 切换：EMBEDDING_BACKEND=openai|ollama|bge
 ```
 
 ### LLM
@@ -128,13 +128,13 @@ class BaseLLM(ABC):
     async def generate(self, prompt: str) -> str: ...
     async def stream(self, prompt: str) -> AsyncIterator[str]: ...
 
-# Backends: OpenAIGenerator, AnthropicGenerator, OllamaGenerator
-# Select via: LLM_BACKEND=openai|anthropic|ollama
+# 后端：OpenAIGenerator、AnthropicGenerator、OllamaGenerator
+# 切换：LLM_BACKEND=openai|anthropic|ollama
 ```
 
-## Ingest Trigger
+## 摄取触发
 
-Document repo configures a GitHub Action workflow:
+文档仓库配置 GitHub Action，push 时自动触发重新索引：
 
 ```yaml
 on:
@@ -147,11 +147,11 @@ jobs:
       - run: curl -X POST https://<rag-host>/ingest
 ```
 
-The RAG backend endpoint is compatible — accepts webhook calls with no body (uses default repo config).
+RAG 后端接口兼容无 body 的 webhook 调用（使用默认仓库配置）。
 
-## Deployment
+## 部署
 
-Docker Compose, two services:
+Docker Compose，两个服务：
 
 ```yaml
 services:
@@ -164,7 +164,7 @@ services:
       - CHROMADB_HOST=chromadb
       - DOCS_REPO_URL=...
     volumes:
-      - ./data/git:/data/git   # cloned docs cache
+      - ./data/git:/data/git   # 文档仓库缓存
     depends_on: [chromadb]
 
   chromadb:
@@ -173,15 +173,15 @@ services:
       - ./data/chroma:/chroma/chroma
 ```
 
-**Excluded for now (YAGNI):** multi-replica scaling, API auth, message queue for long ingest, reranking, hybrid keyword+vector search.
+**暂不包含（YAGNI）：** 多副本扩容、API 鉴权、消息队列（长摄取任务）、rerank 重排序、关键词+向量混合检索。
 
-## Key Decisions
+## 关键决策
 
-| Decision | Choice | Reason |
-|----------|--------|--------|
-| RAG Framework | LangChain | Largest ecosystem, mature Chinese doc support |
-| Web Framework | FastAPI | Native async, SSE streaming, auto docs |
-| Vector DB | ChromaDB | Embedded-first, minimal ops, Docker-friendly |
-| Abstraction | Factory pattern | One interface, multi backend, env-switchable |
-| Chunk boundary | Markdown `##` | Natural fit for VuePress heading structure |
-| Trigger | GitHub Action webhook | Zero infra; docs repo owns its own reindex |
+| 决策 | 选型 | 原因 |
+|------|------|------|
+| RAG 框架 | LangChain | 生态最丰富，中文文档支持成熟 |
+| Web 框架 | FastAPI | 原生 async，SSE 流式，自动接口文档 |
+| 向量数据库 | ChromaDB | 嵌入式优先，运维负担最轻，Docker 友好 |
+| 后端抽象 | 工厂模式 | 统一接口，多后端可切换，环境变量控制 |
+| 分块边界 | Markdown `##` | 与 VuePress 标题结构天然对齐 |
+| 触发方式 | GitHub Action webhook | 零额外基础设施，文档仓库自主控制重索引 |
