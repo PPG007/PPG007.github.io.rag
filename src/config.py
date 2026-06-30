@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     # LLM backend: openai | anthropic | ollama
     llm_backend: str = "openai"
 
-    # OpenAI
+    # OpenAI — 设置 base_url 可切换至硅基流动等兼容平台
     openai_api_key: str = ""
+    openai_base_url: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
     openai_llm_model: str = "gpt-4o"
 

@@ -10,11 +10,14 @@ def get_llm(settings: Settings) -> BaseChatModel:
     backend = settings.llm_backend
 
     if backend == "openai":
-        return ChatOpenAI(
-            model=settings.openai_llm_model,
-            api_key=settings.openai_api_key,
-            temperature=0,
-        )
+        kwargs = {
+            "model": settings.openai_llm_model,
+            "api_key": settings.openai_api_key,
+            "temperature": 0,
+        }
+        if settings.openai_base_url:
+            kwargs["base_url"] = settings.openai_base_url
+        return ChatOpenAI(**kwargs)
 
     if backend == "anthropic":
         return ChatAnthropic(
@@ -37,12 +40,15 @@ def get_streaming_llm(settings: Settings) -> BaseChatModel:
     backend = settings.llm_backend
 
     if backend == "openai":
-        return ChatOpenAI(
-            model=settings.openai_llm_model,
-            api_key=settings.openai_api_key,
-            temperature=0,
-            streaming=True,
-        )
+        kwargs = {
+            "model": settings.openai_llm_model,
+            "api_key": settings.openai_api_key,
+            "temperature": 0,
+            "streaming": True,
+        }
+        if settings.openai_base_url:
+            kwargs["base_url"] = settings.openai_base_url
+        return ChatOpenAI(**kwargs)
 
     if backend == "anthropic":
         return ChatAnthropic(

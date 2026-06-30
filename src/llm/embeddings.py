@@ -10,10 +10,13 @@ def get_embeddings(settings: Settings) -> Embeddings:
     backend = settings.embedding_backend
 
     if backend == "openai":
-        return OpenAIEmbeddings(
-            model=settings.openai_embedding_model,
-            api_key=settings.openai_api_key,
-        )
+        kwargs = {
+            "model": settings.openai_embedding_model,
+            "api_key": settings.openai_api_key,
+        }
+        if settings.openai_base_url:
+            kwargs["base_url"] = settings.openai_base_url
+        return OpenAIEmbeddings(**kwargs)
 
     if backend == "ollama":
         return OllamaEmbeddings(
