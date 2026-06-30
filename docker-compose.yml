@@ -1,0 +1,31 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-openai}
+      - LLM_BACKEND=${LLM_BACKEND:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      - CHROMADB_MODE=client
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - DOCS_REPO_URL=${DOCS_REPO_URL:-}
+      - GIT_CACHE_DIR=/data/git
+    volumes:
+      - git_cache:/data/git
+    depends_on:
+      - chromadb
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:latest
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: unless-stopped
+
+volumes:
+  git_cache:
+  chroma_data:
