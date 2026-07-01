@@ -27,13 +27,14 @@ def get_vectorstore(embeddings: Embeddings) -> Chroma:
     )
 
 
-# ponytail: 通过内部 client 删除集合，langchain-chroma 不直接暴露 drop
 def reset_collection(store: Chroma) -> None:
-    client = store._client
-    try:
-        client.delete_collection(settings.chromadb_collection)
-    except Exception:
-        pass
+    """清空集合中所有文档，保留集合本身避免 Chroma 对象内部引用失效。"""
+    collection = store._collection
+    ids = collection.get()["ids"]
+    if ids:
+        for i in range(0, len(ids), BATCH_SIZE):
+            batch = ids[i:i + BATCH_SIZE]
+            collection.delete(ids=batch)
 
 
 def add_documents(store: Chroma, docs: list[Document]) -> list[str]:
