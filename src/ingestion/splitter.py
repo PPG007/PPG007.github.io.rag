@@ -86,8 +86,9 @@ def split_markdown(rel_path: str, content: str, repo_path: str = "") -> list[Doc
             "hierarchy": hierarchy,
             "anchor": anchor,
             "chunk_index": i,
-            "_images": images,
         })
+        if images:
+            doc.metadata["_images"] = images
         result.append(doc)
 
     return result
