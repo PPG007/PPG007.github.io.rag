@@ -75,12 +75,12 @@ def add_documents_vision(store: Chroma, docs: list[Document]) -> list[str]:
 
 
 def search(store: Chroma, query: str, top_k: int = 5) -> list[dict]:
-    docs_with_scores = store.similarity_search_with_score(query, k=top_k)
+    # ponytail: MMR 对短查询/缩写比纯语义相关度更好，lambda=0.7 偏相关性
+    docs = store.max_marginal_relevance_search(query, k=top_k, lambda_mult=0.7)
     results = []
-    for doc, score in docs_with_scores:
+    for doc in docs:
         results.append({
             "content": doc.page_content,
-            "score": round(float(score), 4),
             "source": {
                 "path": doc.metadata.get("url", ""),
                 "title": doc.metadata.get("title", ""),
