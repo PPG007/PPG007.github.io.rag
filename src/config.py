@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # Vision — 设为 true 则用多模态模型描述文档中的图片
     vision_enabled: bool = False
 
+    # Rerank — 检索后精排，提升结果准确度
+    rerank_enabled: bool = False
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_fetch_multiplier: int = 4  # 初检取 top_k * N 条再精排
+
     # Git
     git_cache_dir: str = "./git_cache"
 

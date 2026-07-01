@@ -74,18 +74,51 @@ def add_documents_vision(store: Chroma, docs: list[Document]) -> list[str]:
     return all_ids
 
 
+def _doc_to_result(doc: Document) -> dict:
+    return {
+        "content": doc.page_content,
+        "source": {
+            "path": doc.metadata.get("url", ""),
+            "title": doc.metadata.get("title", ""),
+            "hierarchy": doc.metadata.get("hierarchy", []),
+            "anchor": f"#{doc.metadata.get('anchor', '')}" if doc.metadata.get("anchor") else "",
+        },
+    }
+
+
+def _rerank(query: str, docs: list[Document], top_k: int) -> list[Document]:
+    """调硅基流动 rerank API 精排。"""
+    import json
+    import urllib.request
+
+    base = (settings.openai_base_url or "https://api.siliconflow.cn/v1").rstrip("/")
+    body = json.dumps({
+        "model": settings.rerank_model,
+        "query": query,
+        "documents": [d.page_content for d in docs],
+        "top_n": top_k,
+    }).encode()
+
+    req = urllib.request.Request(f"{base}/rerank", data=body, headers={
+        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read().decode())
+
+    ranked = []
+    for r in sorted(data.get("results", []), key=lambda x: x["index"]):
+        if r["relevance_score"] > 0:
+            ranked.append(docs[r["index"]])
+    return ranked[:top_k]
+
+
 def search(store: Chroma, query: str, top_k: int = 5) -> list[dict]:
-    # ponytail: MMR 对短查询/缩写比纯语义相关度更好，lambda=0.7 偏相关性
-    docs = store.max_marginal_relevance_search(query, k=top_k, lambda_mult=0.7)
-    results = []
-    for doc in docs:
-        results.append({
-            "content": doc.page_content,
-            "source": {
-                "path": doc.metadata.get("url", ""),
-                "title": doc.metadata.get("title", ""),
-                "hierarchy": doc.metadata.get("hierarchy", []),
-                "anchor": f"#{doc.metadata.get('anchor', '')}" if doc.metadata.get("anchor") else "",
-            },
-        })
-    return results
+    if settings.rerank_enabled:
+        fetch_k = top_k * settings.rerank_fetch_multiplier
+        docs = store.max_marginal_relevance_search(query, k=fetch_k, lambda_mult=0.7)
+        docs = _rerank(query, docs, top_k)
+    else:
+        docs = store.max_marginal_relevance_search(query, k=top_k, lambda_mult=0.7)
+
+    return [_doc_to_result(d) for d in docs]
