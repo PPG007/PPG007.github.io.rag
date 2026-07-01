@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 import chromadb
@@ -6,6 +7,9 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 from src.config import settings
+
+logger = logging.getLogger("rag.store")
+BATCH_SIZE = 200  # ponytail: ChromaDB HTTP 单次上限，超了报 413
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
@@ -33,28 +37,40 @@ def reset_collection(store: Chroma) -> None:
 
 
 def add_documents(store: Chroma, docs: list[Document]) -> list[str]:
-    return store.add_documents(docs)
+    ids = []
+    for i in range(0, len(docs), BATCH_SIZE):
+        batch = docs[i:i + BATCH_SIZE]
+        ids.extend(store.add_documents(batch))
+        logger.info("[store] 入库 %d/%d chunk", min(i + BATCH_SIZE, len(docs)), len(docs))
+    return ids
 
 
 def add_documents_vision(store: Chroma, docs: list[Document]) -> list[str]:
-    """多模态入库：含图片的 chunk 用 text+image embedding。"""
+    """多模态入库：含图片的 chunk 用 text+image embedding，分批写入。"""
     from src.llm.embeddings import embed_multimodal_batch
 
-    # 分离纯文本和含图片的 chunk，记录索引
-    batch: list[tuple[str, list[str]]] = []
-    for doc in docs:
-        images = doc.metadata.pop("_images", [])
-        batch.append((doc.page_content, images))
+    all_ids = []
+    for batch_start in range(0, len(docs), BATCH_SIZE):
+        batch = docs[batch_start:batch_start + BATCH_SIZE]
 
-    embeddings = embed_multimodal_batch(batch, settings)
+        items: list[tuple[str, list[str]]] = []
+        for doc in batch:
+            images = doc.metadata.pop("_images", [])
+            items.append((doc.page_content, images))
 
-    ids = [uuid.uuid4().hex[:16] for _ in docs]
-    texts = [d.page_content for d in docs]
-    metadatas = [{k: v for k, v in d.metadata.items()} for d in docs]
+        embeddings = embed_multimodal_batch(items, settings)
 
-    collection = store._collection
-    collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
-    return ids
+        ids = [uuid.uuid4().hex[:16] for _ in batch]
+        texts = [d.page_content for d in batch]
+        metadatas = [{k: v for k, v in d.metadata.items()} for d in batch]
+
+        collection = store._collection
+        collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+
+        all_ids.extend(ids)
+        logger.info("[store] 入库 %d/%d chunk", min(batch_start + BATCH_SIZE, len(docs)), len(docs))
+
+    return all_ids
 
 
 def search(store: Chroma, query: str, top_k: int = 5) -> list[dict]:
