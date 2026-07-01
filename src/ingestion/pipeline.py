@@ -18,7 +18,7 @@ def run_ingest(task_id: str, repo_url: str | None = None, branch: str | None = N
 
         repo_path = clone_or_pull(repo, br, settings.git_cache_dir)
         file_pairs = load_documents(repo_path)
-        docs = split_documents(file_pairs)
+        docs = split_documents(file_pairs, str(repo_path))
 
         embeddings = get_embeddings(settings)
         store = get_vectorstore(embeddings)

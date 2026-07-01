@@ -1,4 +1,7 @@
 import re
+from pathlib import Path
+from urllib.parse import urlparse
+
 import frontmatter
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_core.documents import Document
@@ -18,9 +21,49 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
     return dict(post.metadata), post.content
 
 
-def split_markdown(rel_path: str, content: str) -> list[Document]:
+def _process_images(content: str, rel_path: str, repo_path: str) -> str:
+    """替换 markdown 中的图片为 LLM 描述。"""
+    if not settings.vision_enabled:
+        return content
+
+    from src.llm.generator import describe_image
+
+    doc_dir = Path(repo_path) / Path(rel_path).parent
+
+    def replace_img(match):
+        full = match.group(0)
+        img_path = match.group(1).strip()
+        if urlparse(img_path).scheme:
+            return full  # 跳过外部 URL
+
+        resolved = (doc_dir / img_path).resolve()
+        if not resolved.exists():
+            return full
+
+        try:
+            desc = describe_image(str(resolved), settings)
+            return f"[图片描述: {desc}]"
+        except Exception:
+            return full
+
+    content = re.sub(
+        r'!\[.*?\]\(([^)]+)\)',
+        replace_img,
+        content,
+    )
+    content = re.sub(
+        r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>',
+        replace_img,
+        content,
+    )
+    return content
+
+
+def split_markdown(rel_path: str, content: str, repo_path: str = "") -> list[Document]:
     metadata, body = parse_frontmatter(content)
     page_title = metadata.get("title", rel_path)
+
+    body = _process_images(body, rel_path, repo_path)
 
     headers_to_split_on = [
         ("#" * i, f"h{i}")
@@ -64,9 +107,9 @@ def split_markdown(rel_path: str, content: str) -> list[Document]:
     return result
 
 
-def split_documents(file_pairs: list[tuple[str, str]]) -> list[Document]:
+def split_documents(file_pairs: list[tuple[str, str]], repo_path: str = "") -> list[Document]:
     all_docs = []
     for rel_path, content in file_pairs:
-        docs = split_markdown(rel_path, content)
+        docs = split_markdown(rel_path, content, repo_path)
         all_docs.extend(docs)
     return all_docs

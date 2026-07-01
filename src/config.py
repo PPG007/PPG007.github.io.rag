@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = 200
     heading_level: int = 2
 
+    # Vision — 设为 true 则用多模态模型描述文档中的图片
+    vision_enabled: bool = False
+
     # Git
     git_cache_dir: str = "./git_cache"
 
