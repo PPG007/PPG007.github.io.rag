@@ -1,3 +1,5 @@
+import uuid
+
 import chromadb
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -32,6 +34,27 @@ def reset_collection(store: Chroma) -> None:
 
 def add_documents(store: Chroma, docs: list[Document]) -> list[str]:
     return store.add_documents(docs)
+
+
+def add_documents_vision(store: Chroma, docs: list[Document]) -> list[str]:
+    """多模态入库：含图片的 chunk 用 text+image embedding。"""
+    from src.llm.embeddings import embed_multimodal_batch
+
+    # 分离纯文本和含图片的 chunk，记录索引
+    batch: list[tuple[str, list[str]]] = []
+    for doc in docs:
+        images = doc.metadata.pop("_images", [])
+        batch.append((doc.page_content, images))
+
+    embeddings = embed_multimodal_batch(batch, settings)
+
+    ids = [uuid.uuid4().hex[:16] for _ in docs]
+    texts = [d.page_content for d in docs]
+    metadatas = [{k: v for k, v in d.metadata.items()} for d in docs]
+
+    collection = store._collection
+    collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+    return ids
 
 
 def search(store: Chroma, query: str, top_k: int = 5) -> list[dict]:

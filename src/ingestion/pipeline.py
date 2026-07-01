@@ -2,7 +2,7 @@ from src.config import settings
 from src.ingestion.git_loader import clone_or_pull, load_documents
 from src.ingestion.splitter import split_documents
 from src.llm.embeddings import get_embeddings
-from src.retrieval.store import get_vectorstore, reset_collection, add_documents
+from src.retrieval.store import get_vectorstore, reset_collection, add_documents, add_documents_vision
 
 
 # ponytail: 全局 dict 存任务状态，多进程/分布式的换成 Redis
@@ -23,7 +23,11 @@ def run_ingest(task_id: str, repo_url: str | None = None, branch: str | None = N
         embeddings = get_embeddings(settings)
         store = get_vectorstore(embeddings)
         reset_collection(store)
-        add_documents(store, docs)
+
+        if settings.vision_enabled:
+            add_documents_vision(store, docs)
+        else:
+            add_documents(store, docs)
 
         _ingest_tasks[task_id] = {
             "status": "done",

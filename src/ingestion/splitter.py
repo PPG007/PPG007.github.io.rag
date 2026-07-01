@@ -21,49 +21,31 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
     return dict(post.metadata), post.content
 
 
-def _process_images(content: str, rel_path: str, repo_path: str) -> str:
-    """替换 markdown 中的图片为 LLM 描述。"""
+def _collect_images(content: str, rel_path: str, repo_path: str) -> tuple[str, list[str]]:
+    """提取文档中的本地图片路径，返回 (清理后的文本, 图片绝对路径列表)。"""
     if not settings.vision_enabled:
-        return content
-
-    from src.llm.generator import describe_image
+        return content, []
 
     doc_dir = Path(repo_path) / Path(rel_path).parent
+    image_paths: list[str] = []
 
-    def replace_img(match):
-        full = match.group(0)
+    def record_img(match):
         img_path = match.group(1).strip()
         if urlparse(img_path).scheme:
-            return full  # 跳过外部 URL
-
+            return match.group(0)
         resolved = (doc_dir / img_path).resolve()
-        if not resolved.exists():
-            return full
+        if resolved.exists():
+            image_paths.append(str(resolved))
+        return match.group(0)
 
-        try:
-            desc = describe_image(str(resolved), settings)
-            return f"[图片描述: {desc}]"
-        except Exception:
-            return full
-
-    content = re.sub(
-        r'!\[.*?\]\(([^)]+)\)',
-        replace_img,
-        content,
-    )
-    content = re.sub(
-        r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>',
-        replace_img,
-        content,
-    )
-    return content
+    content = re.sub(r'!\[.*?\]\(([^)]+)\)', record_img, content)
+    content = re.sub(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', record_img, content, flags=re.I)
+    return content, image_paths
 
 
 def split_markdown(rel_path: str, content: str, repo_path: str = "") -> list[Document]:
     metadata, body = parse_frontmatter(content)
     page_title = metadata.get("title", rel_path)
-
-    body = _process_images(body, rel_path, repo_path)
 
     headers_to_split_on = [
         ("#" * i, f"h{i}")
@@ -94,6 +76,9 @@ def split_markdown(rel_path: str, content: str, repo_path: str = "") -> list[Doc
 
         anchor = slugify(anchor_heading) if anchor_heading else ""
 
+        # 收集该 chunk 中的图片
+        clean_text, images = _collect_images(doc.page_content, rel_path, repo_path)
+
         doc.metadata.update({
             "source_path": rel_path,
             "url": f"{base_url}#{anchor}" if anchor else base_url,
@@ -101,6 +86,7 @@ def split_markdown(rel_path: str, content: str, repo_path: str = "") -> list[Doc
             "hierarchy": hierarchy,
             "anchor": anchor,
             "chunk_index": i,
+            "_images": images,
         })
         result.append(doc)
 
