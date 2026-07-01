@@ -3,7 +3,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import frontmatter
-from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
 from src.config import settings
@@ -22,7 +22,6 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
 
 
 def _collect_images(content: str, rel_path: str, repo_path: str) -> tuple[str, list[str]]:
-    """提取文档中的本地图片路径，返回 (清理后的文本, 图片绝对路径列表)。"""
     if not settings.vision_enabled:
         return content, []
 
@@ -43,53 +42,77 @@ def _collect_images(content: str, rel_path: str, repo_path: str) -> tuple[str, l
     return content, image_paths
 
 
+def _build_hierarchy(metadata: dict, page_title: str) -> list[str]:
+    hierarchy = [page_title]
+    for h_level in range(1, 5):
+        key = f"h{h_level}"
+        if key in metadata:
+            hierarchy.append(metadata[key])
+    return hierarchy
+
+
+def _build_anchor(metadata: dict) -> str:
+    for h_level in range(4, 0, -1):
+        key = f"h{h_level}"
+        if key in metadata:
+            return slugify(metadata[key])
+    return ""
+
+
+def _base_metadata(rel_path: str, page_title: str | None = None) -> dict:
+    base_url = "/" + rel_path.replace(".md", ".html")
+    title = page_title or rel_path
+    return {
+        "source_path": rel_path,
+        "url": base_url,
+        "title": title,
+    }
+
+
 def split_markdown(rel_path: str, content: str, repo_path: str = "") -> list[Document]:
     metadata, body = parse_frontmatter(content)
     page_title = metadata.get("title", rel_path)
+    base = _base_metadata(rel_path, page_title)
 
+    # 第一遍：按标题切
     headers_to_split_on = [
         ("#" * i, f"h{i}")
         for i in range(2, settings.heading_level + 2)
     ]
-    splitter = MarkdownHeaderTextSplitter(
+    header_splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=headers_to_split_on,
         strip_headers=False,
     )
+    docs = header_splitter.split_text(body)
 
-    docs = splitter.split_text(body)
-    base_url = "/" + rel_path.replace(".md", ".html")
+    # 第二遍：超大 chunk 按 size 二次切
+    char_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+        separators=["\n\n", "\n", "。", ". ", " ", ""],
+    )
 
     result = []
-    for i, doc in enumerate(docs):
-        hierarchy = [page_title]
-        for h_level in range(1, 5):
-            key = f"h{h_level}"
-            if key in doc.metadata:
-                hierarchy.append(doc.metadata[key])
+    for header_idx, doc in enumerate(docs):
+        hierarchy = _build_hierarchy(doc.metadata, page_title)
+        anchor = _build_anchor(doc.metadata)
+        url = f"{base['url']}#{anchor}" if anchor else base["url"]
 
-        anchor_heading = ""
-        for h_level in range(4, 0, -1):
-            key = f"h{h_level}"
-            if key in doc.metadata:
-                anchor_heading = doc.metadata[key]
-                break
+        images = _collect_images(doc.page_content, rel_path, repo_path)[1]
 
-        anchor = slugify(anchor_heading) if anchor_heading else ""
-
-        # 收集该 chunk 中的图片
-        clean_text, images = _collect_images(doc.page_content, rel_path, repo_path)
-
-        doc.metadata.update({
-            "source_path": rel_path,
-            "url": f"{base_url}#{anchor}" if anchor else base_url,
-            "title": page_title,
-            "hierarchy": hierarchy,
-            "anchor": anchor,
-            "chunk_index": i,
-        })
-        if images:
-            doc.metadata["_images"] = images
-        result.append(doc)
+        sub_docs = char_splitter.split_text(doc.page_content)
+        for j, sub_doc in enumerate(sub_docs):
+            meta = {
+                **base,
+                "url": url,
+                "hierarchy": hierarchy,
+                "anchor": anchor,
+                "chunk_index": j,
+                "header_index": header_idx,
+            }
+            if images:
+                meta["_images"] = images
+            result.append(Document(page_content=sub_doc, metadata=meta))
 
     return result
 
