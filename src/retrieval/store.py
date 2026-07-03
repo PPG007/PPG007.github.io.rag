@@ -1,5 +1,5 @@
 import logging
-import uuid
+import re
 
 import chromadb
 from langchain_chroma import Chroma
@@ -10,6 +10,7 @@ from src.config import settings
 
 logger = logging.getLogger("rag.store")
 BATCH_SIZE = 200  # ponytail: ChromaDB HTTP 单次上限，超了报 413
+KEYWORD_FETCH_LIMIT = 50
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
@@ -28,13 +29,11 @@ def get_vectorstore(embeddings: Embeddings) -> Chroma:
 
 
 def reset_collection(store: Chroma) -> None:
-    """清空集合中所有文档，保留集合本身避免 Chroma 对象内部引用失效。"""
-    collection = store._collection
-    ids = collection.get()["ids"]
-    if ids:
-        for i in range(0, len(ids), BATCH_SIZE):
-            batch = ids[i:i + BATCH_SIZE]
-            collection.delete(ids=batch)
+    """删除集合，切换 embedding 模型时维度自动适配。调用后需重建 store。"""
+    try:
+        store._client.delete_collection(settings.chromadb_collection)
+    except Exception:
+        pass
 
 
 def add_documents(store: Chroma, docs: list[Document]) -> list[str]:
@@ -46,37 +45,13 @@ def add_documents(store: Chroma, docs: list[Document]) -> list[str]:
     return ids
 
 
-def add_documents_vision(store: Chroma, docs: list[Document]) -> list[str]:
-    """多模态入库：含图片的 chunk 用 text+image embedding，分批写入。"""
-    from src.llm.embeddings import embed_multimodal_batch
-
-    all_ids = []
-    for batch_start in range(0, len(docs), BATCH_SIZE):
-        batch = docs[batch_start:batch_start + BATCH_SIZE]
-
-        items: list[tuple[str, list[str]]] = []
-        for doc in batch:
-            images = doc.metadata.pop("_images", [])
-            items.append((doc.page_content, images))
-
-        embeddings = embed_multimodal_batch(items, settings)
-
-        ids = [uuid.uuid4().hex[:16] for _ in batch]
-        texts = [d.page_content for d in batch]
-        metadatas = [{k: v for k, v in d.metadata.items()} for d in batch]
-
-        collection = store._collection
-        collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
-
-        all_ids.extend(ids)
-        logger.info("[store] 入库 %d/%d chunk", min(batch_start + BATCH_SIZE, len(docs)), len(docs))
-
-    return all_ids
+def _result_content(doc: Document) -> str:
+    return doc.metadata.get("raw_content") or doc.page_content
 
 
 def _doc_to_result(doc: Document) -> dict:
     return {
-        "content": doc.page_content,
+        "content": _result_content(doc),
         "source": {
             "path": doc.metadata.get("url", ""),
             "title": doc.metadata.get("title", ""),
@@ -84,6 +59,62 @@ def _doc_to_result(doc: Document) -> dict:
             "anchor": f"#{doc.metadata.get('anchor', '')}" if doc.metadata.get("anchor") else "",
         },
     }
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|\d+|[\u4e00-\u9fff]{2,}", query)
+    seen = set()
+    strong_terms = []
+    other_terms = []
+    for term in terms:
+        normalized = term.lower()
+        if normalized not in seen:
+            seen.add(normalized)
+            if re.search(r"[A-Za-z0-9]", term):
+                strong_terms.append(term)
+            else:
+                other_terms.append(term)
+    return strong_terms + other_terms
+
+
+def _doc_key(doc: Document) -> tuple[str, str, str]:
+    return (
+        doc.metadata.get("source_path", ""),
+        str(doc.metadata.get("header_index", "")),
+        str(doc.metadata.get("chunk_index", "")),
+    )
+
+
+def _merge_docs(*doc_groups: list[Document]) -> list[Document]:
+    merged = []
+    seen = set()
+    for docs in doc_groups:
+        for doc in docs:
+            key = _doc_key(doc)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(doc)
+    return merged
+
+
+def _keyword_search(store: Chroma, query: str, limit: int) -> list[Document]:
+    docs = []
+    for term in _query_terms(query):
+        try:
+            found = store._collection.get(
+                where_document={"$contains": term},
+                limit=limit,
+                include=["documents", "metadatas"],
+            )
+        except Exception:
+            logger.exception("[store] keyword search failed for term: %s", term)
+            continue
+
+        for content, metadata in zip(found.get("documents", []), found.get("metadatas", [])):
+            docs.append(Document(page_content=content, metadata=metadata or {}))
+
+    return _merge_docs(docs)
 
 
 def _rerank(query: str, docs: list[Document], top_k: int) -> list[Document]:
@@ -95,30 +126,46 @@ def _rerank(query: str, docs: list[Document], top_k: int) -> list[Document]:
     body = json.dumps({
         "model": settings.rerank_model,
         "query": query,
-        "documents": [d.page_content for d in docs],
+        "documents": [_result_content(d) for d in docs],
         "top_n": top_k,
-    }).encode()
+    }, ensure_ascii=False).encode()
 
     req = urllib.request.Request(f"{base}/rerank", data=body, headers={
         "Authorization": f"Bearer {settings.openai_api_key}",
         "Content-Type": "application/json",
     })
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        logger.exception("[store] rerank failed; fallback to initial retrieval")
+        return docs[:top_k]
 
     ranked = []
-    for r in sorted(data.get("results", []), key=lambda x: x["index"]):
-        if r["relevance_score"] > 0:
-            ranked.append(docs[r["index"]])
+    ranked_results = sorted(
+        data.get("results", []),
+        key=lambda x: x.get("relevance_score", 0),
+        reverse=True,
+    )
+    for r in ranked_results:
+        index = r.get("index")
+        if index is None or index >= len(docs):
+            continue
+        ranked.append(docs[index])
     return ranked[:top_k]
 
 
 def search(store: Chroma, query: str, top_k: int = 5) -> list[dict]:
+    fetch_k = max(top_k * settings.rerank_fetch_multiplier, top_k)
     if settings.rerank_enabled:
-        fetch_k = top_k * settings.rerank_fetch_multiplier
-        docs = store.max_marginal_relevance_search(query, k=fetch_k, lambda_mult=0.7)
+        fetch_k = max(fetch_k, top_k * 10, 100)
+        vector_docs = store.similarity_search(query, k=fetch_k)
+        keyword_docs = _keyword_search(store, query, KEYWORD_FETCH_LIMIT)
+        docs = _merge_docs(keyword_docs, vector_docs)
         docs = _rerank(query, docs, top_k)
     else:
-        docs = store.max_marginal_relevance_search(query, k=top_k, lambda_mult=0.7)
+        vector_docs = store.similarity_search(query, k=fetch_k)
+        keyword_docs = _keyword_search(store, query, min(KEYWORD_FETCH_LIMIT, top_k * 2))
+        docs = _merge_docs(keyword_docs, vector_docs)[:top_k]
 
     return [_doc_to_result(d) for d in docs]

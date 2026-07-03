@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     # LLM backend: openai | anthropic | ollama
     llm_backend: str = "openai"
 
+    # API token auth
+    token_auth_enabled: bool = False
+    api_token: str = ""
+
     # OpenAI — 设置 base_url 可切换至硅基流动等兼容平台
     openai_api_key: str = ""
     openai_base_url: str = ""
@@ -42,9 +46,6 @@ class Settings(BaseSettings):
     chunk_overlap: int = 200
     heading_level: int = 2
 
-    # Vision — 设为 true 则用多模态模型描述文档中的图片
-    vision_enabled: bool = False
-
     # Rerank — 检索后精排，提升结果准确度
     rerank_enabled: bool = False
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
@@ -53,7 +54,7 @@ class Settings(BaseSettings):
     # Git
     git_cache_dir: str = "./git_cache"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

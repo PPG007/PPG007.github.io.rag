@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.auth import verify_token_middleware
 from src.api.routes import router
 
 logging.basicConfig(
@@ -19,9 +20,12 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    app.middleware("http")(verify_token_middleware)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origin_regex=".*",
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
